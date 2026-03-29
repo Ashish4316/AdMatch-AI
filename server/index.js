@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const logger = require('./utils/logger');
@@ -23,6 +24,7 @@ app.use(
   })
 );
 app.use(compression());
+app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -49,8 +51,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ── API Routes (add feature routes here) ──────────────────────────────────
-// app.use('/api/v1/auth', require('./routes/auth.routes'));
+// ── API Routes ────────────────────────────────────────────────────────────
+app.use('/api/v1/auth', require('./routes/auth.routes'));
 // app.use('/api/v1/influencers', require('./routes/influencer.routes'));
 // app.use('/api/v1/brands', require('./routes/brand.routes'));
 

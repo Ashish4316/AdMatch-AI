@@ -14,6 +14,7 @@ client/build/
 
 # Logs
 logs/
+!logs/.gitkeep
 *.log
 npm-debug.log*
 
