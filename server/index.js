@@ -1,0 +1,81 @@
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+
+const logger = require('./utils/logger');
+const { connectDB } = require('./config/db');
+const { connectRedis } = require('./config/redis');
+const { errorHandler } = require('./middlewares/errorHandler');
+const { sendNotFound } = require('./utils/apiResponse');
+
+const app = express();
+
+// ── Security & Parsing ─────────────────────────────────────────────────────
+app.use(helmet());
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    credentials: true,
+  })
+);
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// ── HTTP Logging ───────────────────────────────────────────────────────────
+app.use(morgan('combined', { stream: logger.stream }));
+
+// ── Rate Limiting ──────────────────────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+});
+app.use('/api/', limiter);
+
+// ── Health Check ───────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'AdMatch AI server is running',
+    environment: process.env.NODE_ENV,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ── API Routes (add feature routes here) ──────────────────────────────────
+// app.use('/api/v1/auth', require('./routes/auth.routes'));
+// app.use('/api/v1/influencers', require('./routes/influencer.routes'));
+// app.use('/api/v1/brands', require('./routes/brand.routes'));
+
+// ── 404 Handler ────────────────────────────────────────────────────────────
+app.use((req, res) => {
+  sendNotFound(res, `Route ${req.originalUrl} not found`);
+});
+
+// ── Global Error Handler ───────────────────────────────────────────────────
+app.use(errorHandler);
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────
+const PORT = parseInt(process.env.PORT) || 5000;
+
+const startServer = async () => {
+  await connectDB();
+  await connectRedis();
+
+  app.listen(PORT, () => {
+    logger.info(`🚀 AdMatch AI server running on http://localhost:${PORT}`);
+    logger.info(`   Environment : ${process.env.NODE_ENV || 'development'}`);
+  });
+};
+
+startServer().catch((err) => {
+  logger.error(`Failed to start server: ${err.message}`);
+  process.exit(1);
+});
