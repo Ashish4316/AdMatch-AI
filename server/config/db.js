@@ -1,27 +1,31 @@
 const { Sequelize } = require('sequelize');
 const logger = require('../utils/logger');
 
-const sequelize = new Sequelize(
-  process.env.DB_NAME,
-  process.env.DB_USER,
-  process.env.DB_PASSWORD,
-  {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT) || 3306,
-    dialect: 'mysql',
-    logging: (msg) => logger.debug(msg),
-    pool: {
-      max: 10,
-      min: 0,
-      acquire: 30000,
-      idle: 10000,
-    },
-    define: {
-      timestamps: true,
-      underscored: true,
-    },
-  }
-);
+// Supabase Connection String Pattern
+// postgresql://postgres:[PASSWORD]@[HOST]:5432/postgres
+const DATABASE_URL = process.env.DATABASE_URL || `postgresql://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
+
+const sequelize = new Sequelize(DATABASE_URL, {
+  dialect: 'postgres',
+  logging: (msg) => logger.debug(msg),
+  dialectOptions: {
+    // Supabase requires SSL connection
+    ssl: {
+      require: true,
+      rejectUnauthorized: false
+    }
+  },
+  pool: {
+    max: 10,
+    min: 0,
+    acquire: 30000,
+    idle: 10000,
+  },
+  define: {
+    timestamps: true,
+    underscored: true,
+  },
+});
 
 /**
  * Test and authenticate the database connection.
@@ -29,7 +33,7 @@ const sequelize = new Sequelize(
 const connectDB = async () => {
   try {
     await sequelize.authenticate();
-    logger.info('MySQL connected successfully via Sequelize.');
+    logger.info('PostgreSQL connected successfully via Sequelize.');
   } catch (error) {
     logger.error(`Database connection failed: ${error.message}`);
     process.exit(1);
