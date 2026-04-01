@@ -1,102 +1,101 @@
 const jwt = require('jsonwebtoken');
-const { validationResult } = require('express-validator');
-const Company = require('../models/Company.model');
-const { getRedisClient } = require('../config/redis');
+const bcrypt = require('bcryptjs');
+const { query } = require('../config/db');
+const { addTokenToBlacklist } = require('../middlewares/auth.middleware');
 const {
   sendSuccess,
   sendCreated,
   sendError,
-  sendBadRequest,
   sendUnauthorized,
 } = require('../utils/apiResponse');
 const logger = require('../utils/logger');
 
-// ── Token helpers ────────────────────────────────────────────────────────────
+const JWT_ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || '15m';
+const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+const JWT_REFRESH_COOKIE_MAX_AGE_MS = Number(process.env.JWT_REFRESH_COOKIE_MAX_AGE_MS) || 7 * 24 * 60 * 60 * 1000;
 
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'strict',
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+  maxAge: JWT_REFRESH_COOKIE_MAX_AGE_MS,
 };
 
-const generateAccessToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '15m' });
+const REFRESH_CLEAR_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict',
+};
 
-const generateRefreshToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+const formatCompany = (row) => ({
+  id: row.id,
+  name: row.name,
+  email: row.email,
+  industry: row.industry,
+  createdAt: row.created_at,
+});
 
-// ── Controllers ──────────────────────────────────────────────────────────────
+const generateAccessToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: JWT_ACCESS_EXPIRES_IN });
+const generateRefreshToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: JWT_REFRESH_EXPIRES_IN });
 
-/**
- * POST /api/v1/auth/register
- * Register a new company account.
- */
 const register = async (req, res, next) => {
   try {
-    // Validate input
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return sendBadRequest(res, 'Validation failed', errors.array());
-    }
-
     const { name, email, password, industry } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    // Check duplicate email
-    const existing = await Company.findOne({ where: { email } });
-    if (existing) {
-      return sendError(res, { statusCode: 409, message: 'An account with this email already exists.' });
+    const existing = await query('SELECT id FROM companies WHERE email = $1 LIMIT 1', [normalizedEmail]);
+    if (existing.rows.length > 0) {
+      return sendError(res, {
+        statusCode: 409,
+        message: 'A company with this email already exists.',
+      });
     }
 
-    // Create (password hashed by model hook)
-    const company = await Company.create({ name, email, password, industry });
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const insertResult = await query(
+      `INSERT INTO companies (name, email, password, industry)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, email, industry, created_at`,
+      [name.trim(), normalizedEmail, hashedPassword, industry.trim()]
+    );
 
+    const company = insertResult.rows[0];
     const accessToken = generateAccessToken(company.id);
     const refreshToken = generateRefreshToken(company.id);
 
     res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
-
-    logger.info(`New company registered: ${email}`);
+    logger.info(`Company registered: ${company.email}`);
 
     return sendCreated(res, {
       message: 'Company registered successfully.',
       data: {
-        company: company.toPublicJSON(),
+        company: formatCompany(company),
         accessToken,
       },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    return next(error);
   }
 };
 
-/**
- * POST /api/v1/auth/login
- * Authenticate a company and return tokens.
- */
 const login = async (req, res, next) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return sendBadRequest(res, 'Validation failed', errors.array());
-    }
-
     const { email, password } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    // Find company (include password for comparison)
-    const company = await Company.findOne({ where: { email } });
+    const result = await query(
+      'SELECT id, name, email, password, industry, created_at FROM companies WHERE email = $1 LIMIT 1',
+      [normalizedEmail]
+    );
+
+    const company = result.rows[0];
     if (!company) {
-      // Generic message to prevent email enumeration
       return sendUnauthorized(res, 'Invalid email or password.');
     }
 
-    if (!company.isActive) {
-      return sendUnauthorized(res, 'Your account has been deactivated. Contact support.');
-    }
-
-    const isMatch = await company.comparePassword(password);
-    if (!isMatch) {
-      logger.warn(`Failed login attempt for ${email}`);
+    const validPassword = await bcrypt.compare(password, company.password);
+    if (!validPassword) {
+      logger.warn(`Failed login for: ${normalizedEmail}`);
       return sendUnauthorized(res, 'Invalid email or password.');
     }
 
@@ -105,90 +104,64 @@ const login = async (req, res, next) => {
 
     res.cookie('refreshToken', refreshToken, REFRESH_COOKIE_OPTIONS);
 
-    logger.info(`Company login: ${email}`);
-
     return sendSuccess(res, {
       message: 'Login successful.',
       data: {
-        company: company.toPublicJSON(),
+        company: formatCompany(company),
         accessToken,
       },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    return next(error);
   }
 };
 
-/**
- * POST /api/v1/auth/refresh
- * Issue a new access token using the httpOnly refresh token cookie.
- * (Gated by verifyRefreshToken middleware which sets req.company)
- */
 const refresh = async (req, res, next) => {
   try {
     const accessToken = generateAccessToken(req.company.id);
-
-    logger.info(`Access token refreshed for company: ${req.company.email}`);
-
     return sendSuccess(res, {
-      message: 'Access token refreshed.',
+      message: 'Access token refreshed successfully.',
       data: { accessToken },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    return next(error);
   }
 };
 
-/**
- * POST /api/v1/auth/logout
- * Blacklist both the access token and the refresh cookie in Redis.
- * (Gated by protect middleware which sets req.company and req.token)
- */
 const logout = async (req, res, next) => {
   try {
-    let redis;
-    try {
-      redis = getRedisClient();
-    } catch {
-      logger.warn('Redis unavailable during logout – tokens not blacklisted');
+    if (req.token) {
+      addTokenToBlacklist(req.token);
     }
 
-    if (redis) {
-      // Blacklist access token until it naturally expires (15 min)
-      await redis.set(`blacklist:${req.token}`, '1', 'EX', 15 * 60);
-
-      // Blacklist refresh token for 7 days
-      const refreshToken = req.cookies?.refreshToken;
-      if (refreshToken) {
-        await redis.set(`blacklist:${refreshToken}`, '1', 'EX', 7 * 24 * 60 * 60);
-      }
+    const refreshToken = req.cookies?.refreshToken;
+    if (refreshToken) {
+      addTokenToBlacklist(refreshToken);
     }
 
-    // Clear cookie
-    res.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+    res.clearCookie('refreshToken', REFRESH_CLEAR_COOKIE_OPTIONS);
+
+    return sendSuccess(res, {
+      message: 'Logout successful.',
     });
-
-    logger.info(`Company logged out: ${req.company.email}`);
-
-    return sendSuccess(res, { message: 'Logged out successfully.' });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    return next(error);
   }
 };
 
-/**
- * GET /api/v1/auth/me
- * Return the authenticated company's profile.
- * (Gated by protect middleware)
- */
 const getMe = async (req, res) => {
   return sendSuccess(res, {
-    message: 'Profile fetched successfully.',
-    data: { company: req.company.toPublicJSON() },
+    message: 'Company profile fetched successfully.',
+    data: {
+      company: req.company,
+    },
   });
 };
 
-module.exports = { register, login, refresh, logout, getMe };
+module.exports = {
+  register,
+  login,
+  refresh,
+  logout,
+  getMe,
+};

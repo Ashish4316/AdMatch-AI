@@ -1,43 +1,36 @@
-const { Sequelize } = require('sequelize');
-const logger = require('../utils/logger');
+const { Pool } = require('pg');
+require('dotenv').config();
 
-// Supabase Connection String Pattern
-// postgresql://postgres:[PASSWORD]@[HOST]:5432/postgres
-const DATABASE_URL = process.env.DATABASE_URL || `postgresql://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`;
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    require: true,
+    rejectUnauthorized: false,
+  },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
 
-const sequelize = new Sequelize(DATABASE_URL, {
-  dialect: 'postgres',
-  logging: (msg) => logger.debug(msg),
-  dialectOptions: {
-    // Supabase requires SSL connection
-    ssl: {
-      require: true,
-      rejectUnauthorized: false
-    }
-  },
-  pool: {
-    max: 10,
-    min: 0,
-    acquire: 30000,
-    idle: 10000,
-  },
-  define: {
-    timestamps: true,
-    underscored: true,
-  },
+pool.on('connect', () => {
+  console.log('✅ PostgreSQL connected via pg pool');
+});
+
+pool.on('error', (err) => {
+  console.error('❌ Unexpected database error:', err.message);
+  process.exit(-1);
 });
 
 /**
- * Test and authenticate the database connection.
+ * Execute a query against the pool.
+ * @param {string} text - SQL query string
+ * @param {Array}  params - Query parameters
  */
-const connectDB = async () => {
-  try {
-    await sequelize.authenticate();
-    logger.info('PostgreSQL connected successfully via Sequelize.');
-  } catch (error) {
-    logger.error(`Database connection failed: ${error.message}`);
-    process.exit(1);
-  }
-};
+const query = (text, params) => pool.query(text, params);
 
-module.exports = { sequelize, connectDB };
+/**
+ * Get a dedicated client from the pool (for transactions).
+ */
+const getClient = () => pool.connect();
+
+module.exports = { query, getClient, pool };

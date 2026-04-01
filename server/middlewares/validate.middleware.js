@@ -1,40 +1,58 @@
-const { body } = require('express-validator');
+const { body, validationResult } = require('express-validator');
+const { sendBadRequest } = require('../utils/apiResponse');
 
-// ── Register ───────────────────────────────────────────────────────────────
 const registerValidation = [
   body('name')
     .trim()
-    .notEmpty().withMessage('Company name is required')
-    .isLength({ min: 2, max: 150 }).withMessage('Name must be 2–150 characters'),
+    .notEmpty()
+    .withMessage('Company name is required')
+    .isLength({ min: 2, max: 255 })
+    .withMessage('Company name must be between 2 and 255 characters'),
 
   body('email')
     .trim()
-    .notEmpty().withMessage('Email is required')
-    .isEmail().withMessage('Please provide a valid email address')
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Please provide a valid email address')
     .normalizeEmail(),
 
   body('password')
-    .notEmpty().withMessage('Password is required')
-    .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
-    .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter')
-    .matches(/[0-9]/).withMessage('Password must contain at least one number'),
+    .notEmpty()
+    .withMessage('Password is required')
+    .isLength({ min: 8 })
+    .withMessage('Password must be at least 8 characters long'),
 
   body('industry')
     .trim()
-    .notEmpty().withMessage('Industry is required')
-    .isLength({ min: 2, max: 100 }).withMessage('Industry must be 2–100 characters'),
+    .notEmpty()
+    .withMessage('Industry is required')
+    .isLength({ min: 2, max: 100 })
+    .withMessage('Industry must be between 2 and 100 characters'),
 ];
 
-// ── Login ──────────────────────────────────────────────────────────────────
 const loginValidation = [
   body('email')
     .trim()
-    .notEmpty().withMessage('Email is required')
-    .isEmail().withMessage('Please provide a valid email address')
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Please provide a valid email address')
     .normalizeEmail(),
 
-  body('password')
-    .notEmpty().withMessage('Password is required'),
+  body('password').notEmpty().withMessage('Password is required'),
 ];
 
-module.exports = { registerValidation, loginValidation };
+const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return sendBadRequest(res, 'Validation failed', errors.array());
+  }
+  return next();
+};
+
+module.exports = {
+  registerValidation,
+  loginValidation,
+  validateRequest,
+};

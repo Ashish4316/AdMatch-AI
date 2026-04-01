@@ -1,107 +1,121 @@
 const jwt = require('jsonwebtoken');
-const { getRedisClient } = require('../config/redis');
-const { sendUnauthorized, sendForbidden } = require('../utils/apiResponse');
-const Company = require('../models/Company.model');
-const logger = require('../utils/logger');
+const { query } = require('../config/db');
+const { sendUnauthorized } = require('../utils/apiResponse');
 
-/**
- * Verify access token and attach company to req.company.
- * Rejects if the token is blacklisted in Redis (logged-out sessions).
- */
+const tokenBlacklist = [];
+
+const pruneBlacklist = () => {
+  const now = Date.now();
+  for (let index = tokenBlacklist.length - 1; index >= 0; index -= 1) {
+    if (tokenBlacklist[index].expiresAt <= now) {
+      tokenBlacklist.splice(index, 1);
+    }
+  }
+};
+
+const addTokenToBlacklist = (token, expiresAt) => {
+  if (!token) {
+    return;
+  }
+  pruneBlacklist();
+
+  const decoded = jwt.decode(token);
+  const fallback = Date.now() + 15 * 60 * 1000;
+  const tokenExpiry =
+    typeof expiresAt === 'number'
+      ? expiresAt
+      : decoded?.exp
+        ? decoded.exp * 1000
+        : fallback;
+
+  tokenBlacklist.push({ token, expiresAt: tokenExpiry });
+};
+
+const isTokenBlacklisted = (token) => {
+  pruneBlacklist();
+  return tokenBlacklist.some((entry) => entry.token === token);
+};
+
+const getBearerToken = (req) => {
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.split(' ')[1];
+};
+
+const fetchCompanyById = async (companyId) => {
+  const { rows } = await query(
+    'SELECT id, name, email, industry, created_at FROM companies WHERE id = $1 LIMIT 1',
+    [companyId]
+  );
+  return rows[0] || null;
+};
+
 const protect = async (req, res, next) => {
   try {
-    // 1. Extract Bearer token
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return sendUnauthorized(res, 'No token provided. Please log in.');
+    const token = getBearerToken(req);
+    if (!token) {
+      return sendUnauthorized(res, 'Access token is missing.');
     }
 
-    const token = authHeader.split(' ')[1];
+    if (isTokenBlacklisted(token)) {
+      return sendUnauthorized(res, 'Token has been revoked. Please login again.');
+    }
 
-    // 2. Verify JWT signature and expiry
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      if (err.name === 'TokenExpiredError') {
-        return sendUnauthorized(res, 'Access token expired. Please refresh.');
-      }
-      return sendUnauthorized(res, 'Invalid access token.');
-    }
-
-    // 3. Check Redis blacklist (logout / token revocation)
-    let redis;
-    try {
-      redis = getRedisClient();
-      const isBlacklisted = await redis.get(`blacklist:${token}`);
-      if (isBlacklisted) {
-        return sendUnauthorized(res, 'Token has been revoked. Please log in again.');
-      }
     } catch {
-      logger.warn('Redis check skipped in protect middleware (unavailable)');
+      return sendUnauthorized(res, 'Invalid or expired access token.');
     }
 
-    // 4. Load company from DB
-    const company = await Company.findByPk(decoded.id);
+    const company = await fetchCompanyById(decoded.id);
     if (!company) {
-      return sendUnauthorized(res, 'Account not found.');
-    }
-    if (!company.isActive) {
-      return sendForbidden(res, 'Your account has been deactivated.');
+      return sendUnauthorized(res, 'Company account not found.');
     }
 
-    // 5. Attach to request
-    req.company = company;
     req.token = token;
-    next();
-  } catch (err) {
-    logger.error(`Auth middleware error: ${err.message}`);
+    req.company = company;
+    return next();
+  } catch (error) {
     return sendUnauthorized(res, 'Authentication failed.');
   }
 };
 
-/**
- * Verify refresh token from httpOnly cookie.
- * Used exclusively by POST /api/v1/auth/refresh.
- */
 const verifyRefreshToken = async (req, res, next) => {
   try {
     const refreshToken = req.cookies?.refreshToken;
     if (!refreshToken) {
-      return sendUnauthorized(res, 'No refresh token. Please log in.');
+      return sendUnauthorized(res, 'Refresh token is missing.');
+    }
+
+    if (isTokenBlacklisted(refreshToken)) {
+      return sendUnauthorized(res, 'Refresh token has been revoked. Please login again.');
     }
 
     let decoded;
     try {
       decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
     } catch {
-      return sendUnauthorized(res, 'Invalid or expired refresh token. Please log in.');
+      return sendUnauthorized(res, 'Invalid or expired refresh token.');
     }
 
-    // Check Redis blacklist for refresh token
-    let redis;
-    try {
-      redis = getRedisClient();
-      const isBlacklisted = await redis.get(`blacklist:${refreshToken}`);
-      if (isBlacklisted) {
-        return sendUnauthorized(res, 'Refresh token revoked. Please log in.');
-      }
-    } catch {
-      logger.warn('Redis check skipped in verifyRefreshToken (unavailable)');
+    const company = await fetchCompanyById(decoded.id);
+    if (!company) {
+      return sendUnauthorized(res, 'Company account not found.');
     }
 
-    const company = await Company.findByPk(decoded.id);
-    if (!company || !company.isActive) {
-      return sendUnauthorized(res, 'Account not found or deactivated.');
-    }
-
-    req.company = company;
     req.refreshToken = refreshToken;
-    next();
-  } catch (err) {
-    logger.error(`verifyRefreshToken error: ${err.message}`);
-    return sendUnauthorized(res, 'Token verification failed.');
+    req.company = company;
+    return next();
+  } catch (error) {
+    return sendUnauthorized(res, 'Refresh token verification failed.');
   }
 };
 
-module.exports = { protect, verifyRefreshToken };
+module.exports = {
+  protect,
+  verifyRefreshToken,
+  addTokenToBlacklist,
+};
