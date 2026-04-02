@@ -11,8 +11,7 @@ const logger = require('./utils/logger');
 const { pool } = require('./config/db');
 const { connectRedis } = require('./config/redis');
 const { startYoutubeSyncJob } = require('./jobs/youtube.sync.job');
-const { errorHandler } = require('./middlewares/errorHandler');
-const { sendNotFound } = require('./utils/apiResponse');
+const { errorMiddleware, notFoundHandler } = require('./middlewares/error.middleware');
 
 const app = express();
 
@@ -57,15 +56,15 @@ app.use('/api/v1/auth', require('./routes/auth.routes'));
 app.use('/api/v1/influencers', require('./routes/influencer.routes'));
 app.use('/api/v1/campaigns', require('./routes/campaign.routes'));
 app.use('/api/v1/matches', require('./routes/match.routes'));
+app.use('/api/campaigns', require('./routes/campaign.routes'));
+app.use('/api/shortlist', require('./routes/shortlist.routes'));
 // app.use('/api/v1/brands', require('./routes/brand.routes'));
 
 // ── 404 Handler ────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  sendNotFound(res, `Route ${req.originalUrl} not found`);
-});
+app.use(notFoundHandler);
 
 // ── Global Error Handler ───────────────────────────────────────────────────
-app.use(errorHandler);
+app.use(errorMiddleware);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 5000;
