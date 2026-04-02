@@ -55,6 +55,8 @@ app.get('/health', (req, res) => {
 // ── API Routes ────────────────────────────────────────────────────────────
 app.use('/api/v1/auth', require('./routes/auth.routes'));
 app.use('/api/v1/influencers', require('./routes/influencer.routes'));
+app.use('/api/v1/campaigns', require('./routes/campaign.routes'));
+app.use('/api/v1/matches', require('./routes/match.routes'));
 // app.use('/api/v1/brands', require('./routes/brand.routes'));
 
 // ── 404 Handler ────────────────────────────────────────────────────────────
